@@ -1,0 +1,5 @@
+http-server
+
+A prototype http-server built on libevent
+
+picohttpparser.{c,h} is from https://github.com/h2o/picohttpparser
