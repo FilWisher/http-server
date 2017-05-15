@@ -1,23 +1,30 @@
-#include <stdio.h>
-#define _GNU_SOURCE
-#include <sys/socket.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <strings.h>
-#include <stdlib.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <linux/limits.h>
+#include <sys/socket.h>
+
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <assert.h>
+#include <errno.h>
 #include <event.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+#include <unistd.h>
 
 #include "picohttpparser.h"
 
 #define PORT_NO (8081)
+#define SRV_ROOT ("/var/www/html")
+
+// TODO: parse config with yacc
+// TODO: use worker processes to distribute workload
+// TODO: dispatch on filepath
+// TODO: configure for TLS 
 
 struct server {
+	int port;
 	char root[PATH_MAX];
 	struct event ev;
 };
@@ -56,9 +63,6 @@ respond(struct client *cli, char *buf, size_t len)
   return n;
 }
 
-// TODO: don't use bufferevent to write back to client
-// just write using fd and event_add/event_del
-// (we don't want it buffering)
 void
 transfer_file(struct client *cli, int fd)
 {
@@ -202,7 +206,7 @@ main()
 	struct sockaddr_in addr;
 	struct server srv;
 	
-	server_setroot(&srv, "/home/william");
+	server_setroot(&srv, SRV_ROOT);
 
 	if ((fd = socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1)
 		perror("socket");
