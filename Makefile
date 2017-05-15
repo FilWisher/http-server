@@ -4,8 +4,8 @@ LDFLAGS=-levent
 
 default: server
 
-server: server.c httpparser.c
-	$(CC) $(CFLAGS) $(LDFLAGS) httpparser.c server.c -o server
+server: server.c picohttpparser.c
+	$(CC) $(CFLAGS) $(LDFLAGS) picohttpparser.c server.c -o server
 
 clean:
 	@ rm -rf server
