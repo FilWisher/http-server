@@ -1,14 +1,11 @@
 CC=gcc
-CFLAGS=-Wall -Wextra -pedantic -std=c99 -g
+CFLAGS=-Wall -Wextra -pedantic -std=c99
 LDFLAGS=-levent
 
-default: server file
+default: server
 
-server: server.c
-	$(CC) $(CFLAGS) $(LDFLAGS) server.c -o server
-
-file: file.c httpparser.c
-	$(CC) $(CFLAGS) $(LDFLAGS) httpparser.c file.c -o file
+server: server.c httpparser.c
+	$(CC) $(CFLAGS) $(LDFLAGS) httpparser.c server.c -o server
 
 clean:
 	@ rm -rf server
