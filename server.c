@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "picohttpparser.h"
+#include "http.h"
 
 #define PORT_NO (8081)
 #define SRV_ROOT ("/var/www/html")
@@ -74,7 +75,6 @@ server_log(struct server *srv, const char *fmt, ...)
 	va_end(ap);
 }
 
-
 void
 request_close(struct request *req)
 {
@@ -95,15 +95,28 @@ request_write(struct request *req, char *buf, size_t len)
 	return n;
 }
 
+int
+request_status(struct request *req, HTTP_STATUS status)
+{
+	char status_line[256];
+	size_t n;
+	// currently assumes http/1.1
+	n = snprintf(status_line, sizeof(status_line), "HTTP/1.1 %s\r\n", http_status_string[status]);
+	return request_write(req, status_line, n);
+}
+
 void
 transfer_file(struct request *req, int fd)
 {
 	ssize_t n;
 	char buf[1024];
 
-	char status_ok[] = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+	char content_type[] = "Content-Type: text/html\r\n\r\n";
 
-	if (request_write(req, status_ok, sizeof(status_ok)) == -1)
+	if (request_status(req, HTTP_200) == -1)
+		return;
+
+	if (request_write(req, content_type, sizeof(content_type)) == -1)
 		return;
 
 	while (1) {
