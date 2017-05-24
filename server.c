@@ -1,4 +1,6 @@
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/time.h>
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -7,19 +9,22 @@
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
-#include <limits.h>
+#include <linux/limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <strings.h>
 #include <unistd.h>
 
+#include <signal.h>
+
 #include "picohttpparser.h"
 #include "http.h"
 
-#define PORT_NO (8081)
-#define SRV_ROOT ("/var/www/html")
+#define PORT_NO (8080)
+#define SRV_ROOT ("/home/william")
 #define LOG_PATH ("/dev/stderr")
+#define NWORKERS (4)
 
 #define MINIMUM(a, b) (a < b ? a : b)
 
@@ -37,6 +42,8 @@ struct server {
 
 	FILE *log_file;
 	char log_path[PATH_MAX];
+
+	char name[64];
 };
 
 struct client {
@@ -74,6 +81,7 @@ server_log(struct server *srv, const char *fmt, ...)
 	
 	va_end(ap);
 }
+
 
 void
 request_close(struct request *req)
@@ -154,11 +162,19 @@ void
 client_read(int fd, short what, void *arg)
 {
 	struct request *req = arg;
+	struct server *srv = req->cli.srv;
 
 	char buf[4096];
 	size_t buflen = 0, prevbuflen = 0;
 	int ret;
 	unsigned i;
+
+	if (what & EV_TIMEOUT) {
+		printf("%s: request timed out\n", srv->name);
+		request_close(req);
+		close(fd);
+	}
+	printf("%s starting read\n", srv->name);
 
 	while (1) {
 		while ((ret = read(fd, buf + buflen, sizeof(buf) - buflen)) == -1 && errno == EINTR)
@@ -208,21 +224,49 @@ client_read(int fd, short what, void *arg)
 void
 server_accept(int fd, short what, void *arg)
 {
+	struct server *srv = arg;
+	printf("%s accepting\n", srv->name);
 	struct request *req;
 	socklen_t len = sizeof(struct sockaddr_in);
+	struct timeval tv;
+	tv.tv_sec = 5; // timeout in seconds
 
 	if ((req = malloc(sizeof(*req))) == NULL)
 		return;
 
-	if ((req->cli.fd = accept4(fd, (struct sockaddr *)&req->cli.addr, &len, SOCK_NONBLOCK)) == -1)
+	// if ((req->cli.fd = accept4(fd, (struct sockaddr *)&req->cli.addr, &len, SOCK_NONBLOCK)) == -1) {
+	if ((req->cli.fd = accept(fd, (struct sockaddr *)&req->cli.addr, &len)) == -1) {
+		if (errno == EWOULDBLOCK || errno == EAGAIN)
+			printf("%s didn't get it\n", srv->name);
 		return;
+	}
 	
 	req->cli.srv = arg;
 
+	printf("%s setting read event\n", srv->name);
 	event_set(&req->cli.ev, req->cli.fd, EV_WRITE|EV_PERSIST, client_read, req);
-	if (event_add(&req->cli.ev, NULL) == -1)
+	if (event_add(&req->cli.ev, &tv) == -1)
 		printf("error adding\n");
 }
+
+pid_t children[NWORKERS];
+
+void
+signal_handler(int sig, short event, void *arg)
+{
+	int i;
+	pid_t pid;
+	printf("shutting down\n");
+	for (i = 0; i < NWORKERS; i++) {
+		pid = children[i];
+		printf("killing %d\n", (int)pid);
+		if (pid != -1)
+			kill(pid, SIGKILL);
+	}
+	printf("goodbye\n");
+	exit(0);
+}
+
 
 int
 main()
@@ -230,6 +274,8 @@ main()
 	int fd;
 	struct sockaddr_in addr;
 	struct server srv;
+	int i;
+	pid_t pid;
 
 	// set server root and log_path
 	snprintf(srv.root, sizeof(srv.root), "%s", SRV_ROOT);
@@ -260,10 +306,40 @@ main()
 		return 1;
 	}
 
-	event_init();
 
-	event_set(&srv.ev, fd, EV_READ | EV_PERSIST, server_accept, &srv);
-	event_add(&srv.ev, 0);
+	for (i = 0; i < NWORKERS; i++) {
+		pid = fork();
+		if (pid == 0) {
+			snprintf(srv.name, sizeof(srv.name), "worker(%d)", i);
 
+			event_init();
+			event_set(&srv.ev, fd, EV_READ | EV_PERSIST, server_accept, &srv);
+			event_add(&srv.ev, 0);
+			break;
+		} else {
+			printf("adding %d\n", pid);
+			children[i] = pid;
+			// close(fd);
+		}
+	}
+
+	if (pid != 0) {
+	    struct event sigint;
+	    struct event sigterm;
+	    struct event sighup;
+
+	    event_init();
+	    signal_set(&sigint, SIGINT, signal_handler, NULL);
+	    signal_set(&sigterm, SIGTERM, signal_handler, NULL);
+	    signal_set(&sighup, SIGHUP, signal_handler, NULL);
+
+	    signal_add(&sigint, NULL);
+	    signal_add(&sigterm, NULL);
+	    signal_add(&sighup, NULL);
+
+	    snprintf(srv.name, sizeof(srv.name), "master");
+	}
+
+	printf("%s dispatching\n", srv.name);
 	event_dispatch();
 }
