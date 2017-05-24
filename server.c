@@ -22,7 +22,7 @@
 #include "http.h"
 
 #define PORT_NO (8080)
-#define SRV_ROOT ("/home/william")
+#define SRV_ROOT ("/var/www/html")
 #define LOG_PATH ("/dev/stderr")
 #define NWORKERS (4)
 
@@ -55,6 +55,8 @@ struct client {
 };
 
 struct request {
+	int is_closed;
+
 	struct client cli;
 
 	size_t methodlen;
@@ -86,9 +88,12 @@ server_log(struct server *srv, const char *fmt, ...)
 void
 request_close(struct request *req)
 {
-	event_del(&req->cli.ev);
-	close(req->cli.fd);
-	free(req);
+	if (!req->is_closed) {
+	    event_del(&req->cli.ev);
+	    close(req->cli.fd);
+	    free(req);
+	}
+	req->is_closed = 1;
 }
 
 int
@@ -111,6 +116,12 @@ request_status(struct request *req, HTTP_STATUS status)
 	// currently assumes http/1.1
 	n = snprintf(status_line, sizeof(status_line), "HTTP/1.1 %s\r\n", http_status_string[status]);
 	return request_write(req, status_line, n);
+}
+
+void
+request_init(struct request *req)
+{
+	req->is_closed = 0;
 }
 
 void
@@ -208,7 +219,7 @@ client_read(int fd, short what, void *arg)
 	server_log(req->cli.srv, "path is %.*s\n",
 		   (int)req->pathlen, req->path);
 	server_log(req->cli.srv, "HTTP version is 1.%d\n",
-		   (int)req->pathlen, req->path);
+		   (int)req->minor_version);
 	for (i = 0; i != req->nheaders; ++i)
 		server_log(req->cli.srv, "%.*s: %.*s\n",
 			   (int)req->headers[i].name_len,
@@ -229,10 +240,11 @@ server_accept(int fd, short what, void *arg)
 	struct request *req;
 	socklen_t len = sizeof(struct sockaddr_in);
 	struct timeval tv;
-	tv.tv_sec = 5; // timeout in seconds
+	tv.tv_sec = 3; // timeout in seconds
 
 	if ((req = malloc(sizeof(*req))) == NULL)
 		return;
+	request_init(req);
 
 	// if ((req->cli.fd = accept4(fd, (struct sockaddr *)&req->cli.addr, &len, SOCK_NONBLOCK)) == -1) {
 	if ((req->cli.fd = accept(fd, (struct sockaddr *)&req->cli.addr, &len)) == -1) {
