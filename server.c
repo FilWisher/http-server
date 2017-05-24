@@ -9,7 +9,7 @@
 #include <errno.h>
 #include <event.h>
 #include <fcntl.h>
-#include <linux/limits.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +23,7 @@
 
 #define PORT_NO (8080)
 #define SRV_ROOT ("/var/www/html")
-#define LOG_PATH ("/dev/stderr")
+#define LOG_PATH ("test/server_test.log")
 #define NWORKERS (4)
 
 #define MINIMUM(a, b) (a < b ? a : b)
@@ -33,6 +33,8 @@
 // TODO: dispatch on filepath
 // TODO: configure for TLS
 // TODO: set response headers and serialize automatically
+
+pid_t workers[NWORKERS];
 
 struct server {
 	struct event ev;
@@ -76,14 +78,23 @@ server_log(struct server *srv, const char *fmt, ...)
 {
 	va_list ap;
 
+	fprintf(srv->log_file, "[%s] ", srv->name);
 	va_start(ap, fmt);
 
 	vfprintf(srv->log_file, fmt, ap);
 	fflush(stderr);
 	
 	va_end(ap);
+	fprintf(srv->log_file, "\n");
 }
 
+void
+setnonblock(int fd)
+{
+  int flags = fcntl(fd, F_GETFL, 0);
+
+  fcntl(fd, F_SETFL, flags & O_NONBLOCK);
+}
 
 void
 request_close(struct request *req)
@@ -100,7 +111,9 @@ int
 request_write(struct request *req, char *buf, size_t len)
 {
 	ssize_t n;
-	printf("responding: %s (%d)\n", buf, (int)len);
+
+	server_log(req->cli.srv, "responding: %s (%d)\n", buf, (int)len);
+
 	if ((n = write(req->cli.fd, buf, len)) == -1) {
 		request_close(req);
 		return -1;
@@ -181,11 +194,11 @@ client_read(int fd, short what, void *arg)
 	unsigned i;
 
 	if (what & EV_TIMEOUT) {
-		printf("%s: request timed out\n", srv->name);
+		server_log(srv, "request timed out");
 		request_close(req);
 		close(fd);
 	}
-	printf("%s starting read\n", srv->name);
+	server_log(srv, "starting read");
 
 	while (1) {
 		while ((ret = read(fd, buf + buflen, sizeof(buf) - buflen)) == -1 && errno == EINTR)
@@ -213,15 +226,15 @@ client_read(int fd, short what, void *arg)
 
 	}
 
-	server_log(req->cli.srv, "request is %d bytes long \n", ret);
-	server_log(req->cli.srv, "method is is %.*s\n",
+	server_log(req->cli.srv, "request is %d bytes long", ret);
+	server_log(req->cli.srv, "method is is %.*s",
 		   (int)req->methodlen, req->method);
-	server_log(req->cli.srv, "path is %.*s\n",
+	server_log(req->cli.srv, "path is %.*s",
 		   (int)req->pathlen, req->path);
-	server_log(req->cli.srv, "HTTP version is 1.%d\n",
+	server_log(req->cli.srv, "HTTP version is 1.%d",
 		   (int)req->minor_version);
 	for (i = 0; i != req->nheaders; ++i)
-		server_log(req->cli.srv, "%.*s: %.*s\n",
+		server_log(req->cli.srv, "%.*s: %.*s",
 			   (int)req->headers[i].name_len,
 			   req->headers[i].name,
 			    (int)req->headers[i].value_len,
@@ -236,12 +249,12 @@ void
 server_accept(int fd, short what, void *arg)
 {
 	struct server *srv = arg;
-	printf("%s accepting\n", srv->name);
 	struct request *req;
 	socklen_t len = sizeof(struct sockaddr_in);
 	struct timeval tv;
 	tv.tv_sec = 3; // timeout in seconds
 
+	server_log(srv, "accepting");
 	if ((req = malloc(sizeof(*req))) == NULL)
 		return;
 	request_init(req);
@@ -255,23 +268,24 @@ server_accept(int fd, short what, void *arg)
 	
 	req->cli.srv = arg;
 
-	printf("%s setting read event\n", srv->name);
+	server_log(srv, "setting read event");
 	event_set(&req->cli.ev, req->cli.fd, EV_WRITE|EV_PERSIST, client_read, req);
 	if (event_add(&req->cli.ev, &tv) == -1)
 		printf("error adding\n");
 }
-
-pid_t children[NWORKERS];
 
 void
 signal_handler(int sig, short event, void *arg)
 {
 	int i;
 	pid_t pid;
-	printf("shutting down\n");
+	struct server *srv = arg;
+
+	server_log(srv, "shutting down");
+
 	for (i = 0; i < NWORKERS; i++) {
-		pid = children[i];
-		printf("killing %d\n", (int)pid);
+		pid = workers[i];
+		server_log(srv, "killing %d", (int)pid);
 		if (pid != -1)
 			kill(pid, SIGKILL);
 	}
@@ -298,10 +312,12 @@ main()
 		return 1;
 	}
 
-	if ((fd = socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)) == -1) {
+	if ((fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
 		perror("socket");
 		return 1;
 	}
+
+	setnonblock(fd);
 		
 	bzero(&addr, sizeof(addr));
 	addr.sin_family = AF_INET;
@@ -329,9 +345,9 @@ main()
 			event_add(&srv.ev, 0);
 			break;
 		} else {
-			printf("adding %d\n", pid);
-			children[i] = pid;
-			// close(fd);
+			snprintf(srv.name, sizeof(srv.name), "master");
+			server_log(&srv, "adding %d", pid);
+			workers[i] = pid;
 		}
 	}
 
@@ -352,6 +368,6 @@ main()
 	    snprintf(srv.name, sizeof(srv.name), "master");
 	}
 
-	printf("%s dispatching\n", srv.name);
+	server_log(&srv, "dispatching", srv.name);
 	event_dispatch();
 }
